@@ -1,0 +1,5 @@
+.serena/
+shim/bin/
+shim/obj/
+__pycache__/
+eos-shim.log
