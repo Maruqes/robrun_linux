@@ -1,15 +1,18 @@
 // EOS SDK proxy shim.
 //
-// Every export logs its name and returns EOS_Success, except the handful of
-// calls the game actually uses: platform handle, interface handles, connect
-// login with an async callback, id token, and the anti-cheat client session.
+// Stage D: every export logs its name and returns EOS_Success.
+// Stage E1: the calls the observed game trail demands are implemented for real
+//           (knowledge/projects/RobRun/evidence/observed-calls): platform handle, interface
+//           handles, connect login with an async callback, id token, and the
+//           anti-cheat session calls.
 //
-// Everything is local: no network and no real identity.
+// Everything is still local: no network, no real identity, no anti-cheat.
 //
-// Build: build.bat (MSVC), build_mingw.bat or build_linux.sh (MinGW).
+// Build: build.bat (MSVC) or build_linux.sh (MinGW cross).
 
 #define _CRT_SECURE_NO_WARNINGS  // fopen/strrchr are fine here; no _s variants on MinGW
 
+#include "abi/anticheat.hpp"
 #include "core/boot.hpp"
 
 #include <windows.h>
@@ -20,6 +23,8 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+
+
 
 #define EOS_STUB(name)                       \
     extern "C" std::int32_t name(void) {     \
@@ -221,7 +226,14 @@ extern "C" std::int32_t EOS_Shutdown(void) {
 
 EOS_INTERFACE_GETTER(EOS_Platform_GetConnectInterface, g_connect)
 EOS_INTERFACE_GETTER(EOS_Platform_GetAuthInterface, g_auth)
-EOS_INTERFACE_GETTER(EOS_Platform_GetAntiCheatClientInterface, g_anticheat)
+// The anti-cheat interface is the one getter that may answer NULL: EOSSHIM_AC=null
+// reports that this client has no anti-cheat, which is the only client-side
+// state a host can be told apart from "anti-cheat is broken".
+extern "C" void* EOS_Platform_GetAntiCheatClientInterface(void*) {
+    stub("EOS_Platform_GetAntiCheatClientInterface");
+    if (!shim_anticheat_interface_available()) return nullptr;
+    return &e1::g_anticheat;
+}
 EOS_INTERFACE_GETTER(EOS_Platform_GetRTCInterface, g_rtc)
 EOS_INTERFACE_GETTER(EOS_RTC_GetAudioInterface, g_rtc_audio)
 
@@ -234,10 +246,12 @@ extern "C" std::int32_t EOS_Connect_Login(void*, const e1::LoginOptions*,
         return 1;  // EOS_NoConnection would be wrong; invalid parameters
     }
     auto* job = new e1::LoginJob{clientData, callback};
-    if (!CreateThread(nullptr, 0, e1::login_thread, job, 0, nullptr)) {
+    HANDLE thread = CreateThread(nullptr, 0, e1::login_thread, job, 0, nullptr);
+    if (!thread) {
         delete job;
         return 1;
     }
+    CloseHandle(thread);
     return 0;
 }
 
@@ -285,10 +299,12 @@ extern "C" std::int32_t EOS_Auth_Login(void*, const e1::AuthLoginOptions*,
         return 1;
     }
     auto* job = new e1::AuthJob{clientData, callback};
-    if (!CreateThread(nullptr, 0, e1::auth_thread, job, 0, nullptr)) {
+    HANDLE thread = CreateThread(nullptr, 0, e1::auth_thread, job, 0, nullptr);
+    if (!thread) {
         delete job;
         return 1;
     }
+    CloseHandle(thread);
     return 0;
 }
 
@@ -310,13 +326,13 @@ extern "C" std::int32_t EOS_Auth_CopyUserAuthToken(void*, const e1::CopyUserAuth
     auto* token = new e1::AuthToken{};
     token->ApiVersion = 1;
     token->App = "RobRun";
-    token->ClientId = "proxy";
+    token->ClientId = "emulator";
     token->AccountId = const_cast<char*>(e1::kEpicId);
-    token->AccessToken = "proxy-access-token";
+    token->AccessToken = "emulator-access-token";
     token->ExpiresIn = 3600.0;
     token->ExpiresAt = 4102444800.0;  // 2100-01-01
     token->AuthType = 1;
-    token->RefreshToken = "proxy-refresh-token";
+    token->RefreshToken = "emulator-refresh-token";
     token->RefreshExpiresIn = 86400.0;
     token->RefreshExpiresAt = 4102444800.0;
     *out = token;
@@ -401,24 +417,10 @@ extern "C" std::int32_t EOS_ProductUserId_ToString(void*, char* buffer, std::int
 }
 
 // -- anti-cheat -------------------------------------------------------------
-
-extern "C" std::int32_t EOS_AntiCheatClient_BeginSession(void*, const void*) {
-    return stub("EOS_AntiCheatClient_BeginSession");
-}
-
-extern "C" std::int32_t EOS_AntiCheatClient_EndSession(void*, const void*) {
-    return stub("EOS_AntiCheatClient_EndSession");
-}
-
-extern "C" std::uint64_t EOS_AntiCheatClient_AddNotifyMessageToServer(void*, const void*,
-                                                                     void*, void*) {
-    stub("EOS_AntiCheatClient_AddNotifyMessageToServer");
-    return 2;
-}
-
-extern "C" std::int32_t EOS_AntiCheatClient_RemoveNotifyMessageToServer(void*, std::uint64_t) {
-    return stub("EOS_AntiCheatClient_RemoveNotifyMessageToServer");
-}
+//
+// The session calls live in abi/anticheat.cpp: they carry the message plumbing
+// and the EOSSHIM_AC policy. Only the interface getter stays here, with the
+// other platform getters.
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {

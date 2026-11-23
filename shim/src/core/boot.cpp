@@ -1,9 +1,10 @@
-// Shim boot: the call log and the shared stub that every unimplemented export
+// Shim boot: the log and the shared stub that every unimplemented export
 // lands in.
 
 #include "core/boot.hpp"
 
 #include <cstdint>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -91,10 +92,27 @@ int stub(const char* name) {
     return 0;
 }
 
+void shim_log(const char* fmt, ...) {
+    InitOnceExecuteOnce(&g_open_once, open_log, nullptr, nullptr);
+
+    std::lock_guard<std::mutex> guard(g_state.lock);
+    if (!g_state.enabled || !g_state.file) return;
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    std::fprintf(g_state.file, "[%02d:%02d:%02d.%03d pid=%lu tid=%lu] ", st.wHour, st.wMinute,
+                 st.wSecond, st.wMilliseconds, GetCurrentProcessId(), GetCurrentThreadId());
+    va_list ap;
+    va_start(ap, fmt);
+    std::vfprintf(g_state.file, fmt, ap);
+    va_end(ap);
+    std::fputc('\n', g_state.file);
+    std::fflush(g_state.file);
+}
+
 // ---------------------------------------------------------------------------
 // crash probe: if the process dies on a native fault, say where
 // ---------------------------------------------------------------------------
-
 namespace {
 
 LONG WINAPI on_fault(EXCEPTION_POINTERS* info) {

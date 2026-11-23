@@ -3,11 +3,13 @@
 
 Input : ../data/eos-proxy.def  (681 names, from the genuine SDK)
 Output: src/exports.inc   one `EOS_STUB(name)` line per export
-        src/exports.def   the same names as a local .def, so the folder builds
-                          when copied somewhere else
+        src/exports.def   the same names as a local .def, so the build works
+                          when projects/shim is copied somewhere else
 
 The generated files are build artifacts: edit the canonical .def or this
 script, never the output.
+
+Refuses to generate if a DummyEOS_* name appears (see AGENTS.md, rule 3).
 """
 
 from __future__ import annotations
@@ -22,11 +24,11 @@ DLL_DIR = os.path.dirname(HERE)
 
 IDENT = re.compile(r"^EOS_[A-Za-z0-9_]+$")
 
-# Implemented by hand in src/abi/eos.cpp; must not also be generated.
+# Implemented by hand in src/shim.cpp; must not also be generated.
 SPECIAL = {
     # stage D
     "EOS_GetVersion",  # returns a version string; NULL here crashes the game
-    # stage E1 - the calls the real game trail demands
+    # stage E1 - the calls the real game trail demands (SilverBullet: knowledge/projects/RobRun/evidence/observed-calls)
     "EOS_Platform_Create",
     "EOS_Platform_Tick",
     "EOS_Platform_Release",
@@ -58,6 +60,7 @@ SPECIAL = {
     "EOS_AntiCheatClient_EndSession",
     "EOS_AntiCheatClient_AddNotifyMessageToServer",
     "EOS_AntiCheatClient_RemoveNotifyMessageToServer",
+    "EOS_AntiCheatClient_ReceiveMessageFromServer",
 }
 
 
@@ -72,6 +75,9 @@ def read_def(path: str) -> list[str]:
             name = line.split("=", 1)[0].strip()
             if not name:
                 continue
+            if name.lower().startswith("dummyeos_"):
+                sys.exit(f"refusing to export {name}: DummyEOS_* is the analysed "
+                         f"proxy's fingerprint (AGENTS.md rule 3)")
             if not IDENT.match(name):
                 sys.exit(f"bad export name in {path}: {name!r}")
             if name in seen:
@@ -113,7 +119,7 @@ def main() -> int:
     print(f"wrote     {inc_path} ({len(generated)} stubs)")
     print(f"wrote     {def_path} ({len(names)} exports)")
     if skipped:
-        print(f"skipped   {', '.join(skipped)} (implemented in src/abi/eos.cpp)")
+        print(f"skipped   {', '.join(skipped)} (implemented in shim.cpp)")
     return 0
 
 
