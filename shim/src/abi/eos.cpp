@@ -220,9 +220,8 @@ extern "C" std::int32_t EOS_Platform_Tick(void*) {
     // all - measured from outside the agent, which cross-checks the agent's
     // own accounting on the panel.
     const std::uint64_t tick_t0 = PerfWindow::now_us();
-    stub("EOS_Platform_Tick");
-    if (g_pump) g_pump();
     const std::int32_t result = stub("EOS_Platform_Tick");
+    if (g_pump) g_pump();
     shim_diag_tick(PerfWindow::since_us(tick_t0), g_pump != nullptr);
     return result;
 }
