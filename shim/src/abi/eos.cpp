@@ -8,12 +8,18 @@
 //
 // Everything is still local: no network, no real identity, no anti-cheat.
 //
+// Optional sidecar: if better_game.dll sits next to this DLL, it is loaded on
+// the first export call. That is the only hook the position reader needs; with
+// the file absent this shim behaves exactly as before, and BETTER_GAME=0
+// disables the load without touching the filesystem.
+//
 // Build: build.bat (MSVC) or build_linux.sh (MinGW cross).
 
 #define _CRT_SECURE_NO_WARNINGS  // fopen/strrchr are fine here; no _s variants on MinGW
 
 #include "abi/anticheat.hpp"
 #include "core/boot.hpp"
+#include "core/diag.hpp"
 
 #include <windows.h>
 
@@ -24,6 +30,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "perf.hpp"
 
 
 #define EOS_STUB(name)                       \
@@ -207,7 +214,17 @@ extern "C" void* EOS_Platform_Create(const void*) {
 }
 
 extern "C" std::int32_t EOS_Platform_Tick(void*) {
-    return stub("EOS_Platform_Tick");
+    // The game's per-frame call. Everything the sidecar needs to do with
+    // managed objects happens here, on this thread; see better_game_pump().
+    // The duration is the full frame share the game gives us - stub, pump and
+    // all - measured from outside the agent, which cross-checks the agent's
+    // own accounting on the panel.
+    const std::uint64_t tick_t0 = PerfWindow::now_us();
+    stub("EOS_Platform_Tick");
+    if (g_pump) g_pump();
+    const std::int32_t result = stub("EOS_Platform_Tick");
+    shim_diag_tick(PerfWindow::since_us(tick_t0), g_pump != nullptr);
+    return result;
 }
 
 extern "C" void EOS_Platform_Release(void*) {

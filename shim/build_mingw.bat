@@ -25,9 +25,9 @@ if not exist bin mkdir bin
 
 echo [*] building shim
 g++ -shared -O2 -Wall -Wextra ^
-    -Isrc -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 ^
+    -Isrc -I..\shared\include -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 ^
     -o bin\EOSSDK-Win64-Shipping.dll ^
-    src\core\boot.cpp src\abi\eos.cpp ^
+    src\core\boot.cpp src\core\diag.cpp src\abi\eos.cpp ^
     src\abi\anticheat.cpp src\abi\anticheat_policy.cpp src\exports.def ^
     -static -static-libgcc -static-libstdc++ ^
     -Wl,--no-insert-timestamp

@@ -3,6 +3,10 @@
 
 #include "core/win32.hpp"
 
+// Resolved from the sidecar at load and called from EOS_Platform_Tick on the
+// game's main thread. Null when better_game.dll is absent.
+extern void (*g_pump)();
+
 // Logs the call and returns EOS_Success (0). Every unimplemented export is a
 // jump to this, which is why the whole surface can exist without 600 bodies.
 int stub(const char* name);

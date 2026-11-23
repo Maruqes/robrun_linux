@@ -1,7 +1,8 @@
-// Shim boot: the log and the shared stub that every unimplemented export
-// lands in.
+// Shim boot: the log, the optional sidecar load, and the shared stub that
+// every unimplemented export lands in.
 
 #include "core/boot.hpp"
+#include "core/diag.hpp"
 
 #include <cstdint>
 #include <cstdarg>
@@ -61,12 +62,19 @@ BOOL CALLBACK open_log(PINIT_ONCE, PVOID, PVOID*) {
                  GetCurrentProcessId(), st.wYear, st.wMonth, st.wDay,
                  st.wHour, st.wMinute, st.wSecond);
     std::fflush(g_state.file);
+    shim_diag_note_locked("shim attached pid=%lu", GetCurrentProcessId());
     return TRUE;
 }
 
 INIT_ONCE g_open_once = INIT_ONCE_STATIC_INIT;
 
 }  // namespace
+
+// Nothing wires this in this build: there is no sidecar to load, so the pump
+// stays null and EOS_Platform_Tick only measures its own cost. The declaration
+// is kept so every other translation unit is identical to the build that does
+// load better_game.dll.
+void (*g_pump)() = nullptr;
 
 int stub(const char* name) {
     InitOnceExecuteOnce(&g_open_once, open_log, nullptr, nullptr);
@@ -157,6 +165,15 @@ LONG WINAPI on_fault(EXCEPTION_POINTERS* info) {
                  static_cast<unsigned long>(rec->ExceptionCode), address, where, rva,
                  GetCurrentThreadId());
     std::fflush(g_state.file);
+    shim_diag_fault();
+    const char* leaf = where;  // "unknown" when no owning module was found
+    if (module_name[0]) {
+        const char* slash = std::strrchr(module_name, '\\');
+        leaf = slash ? slash + 1 : module_name;
+    }
+    shim_diag_note_locked("!!! fault code=0x%08lx in %s + %#llx thread=%lu",
+                          static_cast<unsigned long>(rec->ExceptionCode), leaf, rva,
+                          GetCurrentThreadId());
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
