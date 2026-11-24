@@ -1,16 +1,15 @@
-// One performance window, shared by the agent, the overlay and the enet proxy.
+// One performance window, shared by the shim's timed phases.
 //
 // Buckets of microseconds accumulate until the caller closes the window against
 // a caller-supplied clock reading; then one greppable summary line reports
-// where the time went. Platform-free on purpose: each process supplies its own
-// clock, and the host suite verifies the accounting without Windows.
+// where the time went. Platform-free on purpose: the host suite verifies the
+// accounting without Windows.
 //
 // The clock is steady_clock, not GetTickCount64: the same ~15.6 ms tick
-// quantisation that bit the slice deadlines (core/timing.hpp) would smear every
-// average here the same way.
+// quantisation would smear every average here.
 //
 // Two copies of every bucket: the window copy restarts with each perf line and
-// feeds the logs, the totals copy never restarts and feeds the panel's diag
+// feeds the logs, the totals copy never restarts and feeds the diagnostic
 // section, which turns bucket deltas into per-second rates. One add() feeds
 // both, so no phase is accounted twice or missed.
 #pragma once
@@ -46,8 +45,8 @@ public:
     void restart(std::uint64_t now) {
         start_ = now;
         for (Bucket& b : buckets_) b = Bucket{};
-        // totals_ is deliberately not cleared: the panel diffs it between
-        // polls, and a reset here would punch a hole in that stream.
+        // totals_ is deliberately not cleared: the diagnostics reader diffs it
+        // between polls, and a reset here would punch a hole in that stream.
     }
 
     bool closed(std::uint64_t now, std::uint64_t window_us) const {

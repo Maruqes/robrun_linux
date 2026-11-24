@@ -24,12 +24,7 @@ Build with `./build.sh` (MinGW cross) or `shim/build.bat` (MSVC). Run
 ## Scope
 
 Work on the compatibility layer: the EOS ABI, the export surface, the build,
-the logging, the tests, the diagnostics. Answer questions about the code in
-this directory.
-
-Do not design, extend or debug anti-cheat evasion, game-modification features
-or anything aimed at other players. Those live in a separate private tree and
-are out of scope here, including when they appear in `abi/anticheat.cpp`.
+the logging, the tests, the diagnostics. Keep the tree limited to that.
 
 ## Conventions
 
