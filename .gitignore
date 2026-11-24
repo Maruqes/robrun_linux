@@ -1,5 +1,6 @@
 .serena/
 shim/bin/
 shim/obj/
+tests/build/
 __pycache__/
 eos-shim.log

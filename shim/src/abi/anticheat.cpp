@@ -24,7 +24,9 @@
 // Every message is logged regardless of the mode, so `off` is a capture mode.
 
 #include "abi/anticheat.hpp"
+#include "abi/anticheat_options.hpp"
 #include "abi/anticheat_policy.hpp"
+#include "abi/eos_result.hpp"
 #include "core/boot.hpp"
 
 #include <windows.h>
@@ -33,7 +35,6 @@
 #include <cstring>
 #include <mutex>
 #include <string>
-#include <string_view>
 
 namespace {
 
@@ -54,25 +55,6 @@ struct MessageToServerInfo {
 
 using MessageToServerCallback = void (*)(const MessageToServerInfo*);
 
-// EOS_AntiCheatClient_ReceiveMessageFromServerOptions, EOS SDK 1.19.2:
-// ApiVersion, Data, DataLengthBytes.
-struct ReceiveMessageOptions {
-    std::int32_t ApiVersion;
-    const void* Data;
-    std::uint32_t DataLengthBytes;
-};
-
-// The analysed proxy was built from newer headers and read Data at +8 and the
-// length at +4. A wrong layout reads past what the game passes, so both shapes
-// are read and the self-consistent one wins; the log records which one did.
-struct ReceiveMessageOptionsAlt {
-    std::int32_t ApiVersion;
-    std::uint32_t DataLengthBytes;
-    const void* Data;
-};
-
-inline constexpr std::int32_t kResultSuccess = 0;
-inline constexpr std::int32_t kResultClientProtectionNotAvailable = 0x2EE0;
 inline constexpr std::uint64_t kNotificationMessageToServer = 2;
 inline constexpr std::uint32_t kMaxLoggedBytes = 160;
 
@@ -136,8 +118,14 @@ bool read_mode_file(char* out, std::size_t capacity) {
 
 BOOL CALLBACK load_policy(PINIT_ONCE, PVOID, PVOID*) {
     char text[256] = {};
-    if (!GetEnvironmentVariableA("EOSSHIM_AC", text, sizeof text) &&
-        !read_mode_file(text, sizeof text)) {
+    const DWORD env_len = GetEnvironmentVariableA("EOSSHIM_AC", text, sizeof text);
+    if (env_len >= sizeof text) {
+        shim_log("proxy: anticheat: EOSSHIM_AC ignored: %lu chars exceed %zu, keeping default %s",
+                 static_cast<unsigned long>(env_len), sizeof text - 1,
+                 policy_name(g_state.policy.mode));
+        return TRUE;
+    }
+    if (!env_len && !read_mode_file(text, sizeof text)) {
         shim_log("proxy: anticheat: policy=%s (default) probe_len=0",
                  policy_name(g_state.policy.mode));
         return TRUE;
@@ -159,14 +147,9 @@ INIT_ONCE g_policy_once = INIT_ONCE_STATIC_INIT;
 
 void policy() { InitOnceExecuteOnce(&g_policy_once, load_policy, nullptr, nullptr); }
 
-// Renders at most kMaxLoggedBytes of `len` bytes. Returns an empty view when
-// there is nothing to render, so callers can pass .data() to %s safely.
-std::string_view hex_of(const std::uint8_t* data, std::size_t len, char* scratch,
-                        std::size_t scratch_len) {
-    if (!data || len == 0) return {};
-    const std::size_t capped = len < kMaxLoggedBytes ? len : kMaxLoggedBytes;
-    if (!eos_ac::to_hex(data, capped, scratch, scratch_len)) return {};
-    return std::string_view(scratch, capped * 2);
+const char* hex_of(const std::uint8_t* data, std::size_t len, char* scratch,
+                   std::size_t scratch_len) {
+    return eos_ac::hex_text(data, len, kMaxLoggedBytes, scratch, scratch_len);
 }
 
 // Hands one message to the callback the game registered with
@@ -225,8 +208,8 @@ extern "C" std::int32_t EOS_AntiCheatClient_BeginSession(void*,
 
     if (g_state.policy.mode == eos_ac::Mode::Null) {
         shim_log("proxy: anticheat: begin refused result=0x%x (ClientProtectionNotAvailable)",
-                 kResultClientProtectionNotAvailable);
-        return kResultClientProtectionNotAvailable;
+                 eos_result::kClientProtectionNotAvailable);
+        return eos_result::kClientProtectionNotAvailable;
     }
 
     if (g_state.policy.mode == eos_ac::Mode::Probe && g_state.policy.probe_len) {
@@ -234,11 +217,11 @@ extern "C" std::int32_t EOS_AntiCheatClient_BeginSession(void*,
         const auto hex = hex_of(g_state.policy.probe, g_state.policy.probe_len, scratch,
                                 sizeof scratch);
         shim_log("proxy: anticheat: send begin probe len=%zu data=%s",
-                 g_state.policy.probe_len, hex.data());
+                 g_state.policy.probe_len, hex);
         send_to_server(g_state.policy.probe, g_state.policy.probe_len);
     }
 
-    return kResultSuccess;
+    return eos_result::kSuccess;
 }
 
 extern "C" std::int32_t EOS_AntiCheatClient_EndSession(void*) {
@@ -272,7 +255,7 @@ extern "C" std::int32_t EOS_AntiCheatClient_EndSession(void*) {
     g_state.began_ms = 0;
     g_state.first_challenge_ms = 0;
     g_state.warned_enforcing = false;
-    return kResultSuccess;
+    return eos_result::kSuccess;
 }
 
 extern "C" std::uint64_t EOS_AntiCheatClient_AddNotifyMessageToServer(
@@ -295,31 +278,28 @@ extern "C" std::int32_t EOS_AntiCheatClient_RemoveNotifyMessageToServer(void*,
     shim_log("proxy: anticheat: handler removed id=%llu", id);
     g_state.to_server = nullptr;
     g_state.to_server_client_data = nullptr;
-    return kResultSuccess;
+    return eos_result::kSuccess;
 }
 
 extern "C" std::int32_t EOS_AntiCheatClient_ReceiveMessageFromServer(void*,
                                                                      const void* raw_options) {
     policy();
     if (!raw_options) {
-        shim_log("proxy: anticheat: recv dropped: no options");
-        return 1;  // EOS_InvalidParameters
+        shim_log("proxy: anticheat: recv dropped: no options result=%d",
+                 eos_result::kInvalidParameters);
+        return eos_result::kInvalidParameters;
     }
 
-    const auto* primary = static_cast<const ReceiveMessageOptions*>(raw_options);
-    const auto* alt = static_cast<const ReceiveMessageOptionsAlt*>(raw_options);
-
-    const std::uint32_t primary_len = primary->DataLengthBytes;
-    const std::uint32_t alt_len = alt->DataLengthBytes;
-    const bool use_alt = primary_len > 65536 && alt_len <= 65536;
-
-    const std::uint32_t len = use_alt ? alt_len : primary_len;
-    const void* data = use_alt ? alt->Data : primary->Data;
+    const auto* options =
+        static_cast<const eos_ac::ReceiveMessageFromServerOptions*>(raw_options);
+    const std::uint32_t len = options->DataLengthBytes;
+    const void* data = options->Data;
 
     unsigned long long received = 0;
     unsigned long long sent = 0;
     unsigned long long since_begin_ms = 0;
     bool first_challenge = false;
+    bool warn_enforcing = false;
     {
         std::lock_guard<std::mutex> guard(g_state.lock);
         received = ++g_state.received;
@@ -328,13 +308,15 @@ extern "C" std::int32_t EOS_AntiCheatClient_ReceiveMessageFromServer(void*,
             g_state.first_challenge_ms = GetTickCount64();
             since_begin_ms = g_state.first_challenge_ms - g_state.began_ms;
             first_challenge = true;
+            warn_enforcing =
+                g_state.policy.mode == eos_ac::Mode::Off && !g_state.warned_enforcing;
+            g_state.warned_enforcing = g_state.warned_enforcing || warn_enforcing;
         }
     }
 
     if (first_challenge) {
         shim_log("proxy: anticheat: first challenge %llu ms after begin", since_begin_ms);
-        if (g_state.policy.mode == eos_ac::Mode::Off && !g_state.warned_enforcing) {
-            g_state.warned_enforcing = true;
+        if (warn_enforcing) {
             shim_log("proxy: anticheat: ENFORCING HOST: this host runs the anti-cheat server half");
             shim_log("proxy: anticheat: policy=off sends nothing, so it will disconnect us with "
                      "403/E-0503 in about a minute");
@@ -347,24 +329,23 @@ extern "C" std::int32_t EOS_AntiCheatClient_ReceiveMessageFromServer(void*,
     const auto hex = hex_of(static_cast<const std::uint8_t*>(data), len, scratch,
                             sizeof scratch);
 
-    shim_log("proxy: anticheat: recv n=%llu api=%d layout=%c len=%u alt_len=%u data=%s%s",
-             received, primary->ApiVersion, use_alt ? 'b' : 'a', len, alt_len, hex.data(),
-             len > kMaxLoggedBytes ? " (truncated)" : "");
+    shim_log("proxy: anticheat: recv n=%llu api=%d len=%u data=%s%s", received,
+             options->ApiVersion, len, hex, len > kMaxLoggedBytes ? " (truncated)" : "");
 
     if (!data || len == 0) {
         shim_log("proxy: anticheat: recv ignored: empty payload");
-        return kResultSuccess;
+        return eos_result::kSuccess;
     }
 
     std::uint8_t reply[512];
     const std::size_t reply_len =
         eos_ac::reply_for(g_state.policy, static_cast<const std::uint8_t*>(data), len, reply,
                           sizeof reply);
-    if (reply_len == 0) return kResultSuccess;
+    if (reply_len == 0) return eos_result::kSuccess;
 
     char reply_hex[kMaxLoggedBytes * 2 + 1] = {};
     const auto text = hex_of(reply, reply_len, reply_hex, sizeof reply_hex);
-    shim_log("proxy: anticheat: send n=%llu len=%zu data=%s", sent, reply_len, text.data());
+    shim_log("proxy: anticheat: send n=%llu len=%zu data=%s", sent, reply_len, text);
     send_to_server(reply, reply_len);
-    return kResultSuccess;
+    return eos_result::kSuccess;
 }

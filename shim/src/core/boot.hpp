@@ -3,8 +3,8 @@
 
 #include "core/win32.hpp"
 
-// Resolved from the sidecar at load and called from EOS_Platform_Tick on the
-// game's main thread. Null when better_game.dll is absent.
+// Optional frame hook called from EOS_Platform_Tick on the game's main thread.
+// Null in this build: nothing installs one.
 extern void (*g_pump)();
 
 // Logs the call and returns EOS_Success (0). Every unimplemented export is a

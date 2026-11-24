@@ -61,6 +61,12 @@ const char* verdict_name(Verdict verdict);
 // number of characters written (without the NUL), or 0 when `cap` is too small.
 std::size_t to_hex(const std::uint8_t* data, std::size_t len, char* out, std::size_t cap);
 
+// Renders at most `max_bytes` of `len` bytes into `scratch` for a %s log
+// argument. Never returns null: an empty or null payload, or a scratch too
+// small for the capped length, yields an empty string.
+const char* hex_text(const std::uint8_t* data, std::size_t len, std::size_t max_bytes,
+                     char* scratch, std::size_t scratch_len);
+
 // False only for `noiface`: the shim then reports no anti-cheat client
 // interface at all. This build of the game asserts on null, so `noiface` is a
 // documented dead end rather than a mode to run.

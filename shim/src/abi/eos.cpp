@@ -8,27 +8,19 @@
 //
 // Everything is still local: no network, no real identity, no anti-cheat.
 //
-// Optional sidecar: if better_game.dll sits next to this DLL, it is loaded on
-// the first export call. That is the only hook the position reader needs; with
-// the file absent this shim behaves exactly as before, and BETTER_GAME=0
-// disables the load without touching the filesystem.
-//
 // Build: build.bat (MSVC) or build_linux.sh (MinGW cross).
 
 #define _CRT_SECURE_NO_WARNINGS  // fopen/strrchr are fine here; no _s variants on MinGW
 
 #include "abi/anticheat.hpp"
+#include "abi/eos_result.hpp"
 #include "core/boot.hpp"
 #include "core/diag.hpp"
 
 #include <windows.h>
 
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <mutex>
-#include <string>
-#include <unordered_map>
 
 #include "perf.hpp"
 
@@ -124,6 +116,7 @@ DWORD WINAPI login_thread(LPVOID param) {
     info.ResultCode = 0;  // EOS_Success
     info.ClientData = job->clientData;
     info.LocalUserId = const_cast<char*>(kUserId);
+    shim_log("proxy: connect: login callback result=%d user=%s", info.ResultCode, kUserId);
     job->callback(&info);
 
     delete job;
@@ -147,19 +140,19 @@ struct AuthLoginOptions {
     std::int32_t ScopeFlags;
 };
 
+// EOS_Auth_LoginCallbackInfo, EOS SDK 1.19.2. The game reads every field, so a
+// shorter struct hands it stack bytes for the trailing pointers.
 struct AuthLoginCallbackInfo {
     std::int32_t ResultCode;
     void* ClientData;
     void* LocalUserId;
+    const void* PinGrantInfo;
     void* ContinuanceToken;
+    const void* AccountFeatureRestrictedInfo;
+    void* SelectedAccountId;
 };
 
 using AuthCallback = void (*)(const AuthLoginCallbackInfo*);
-
-struct GetLoginStatusOptions {
-    std::int32_t ApiVersion;
-    void* LocalUserId;
-};
 
 struct CopyUserAuthTokenOptions {
     std::int32_t ApiVersion;
@@ -173,12 +166,14 @@ struct AuthToken {
     void* AccountId;
     const char* AccessToken;
     double ExpiresIn;
-    double ExpiresAt;
+    const char* ExpiresAt;  // ISO 8601 UTC string, not a number
     std::int32_t AuthType;
     const char* RefreshToken;
     double RefreshExpiresIn;
-    double RefreshExpiresAt;
+    const char* RefreshExpiresAt;
 };
+
+const char kTokenExpiresAt[] = "2100-01-01T00:00:00.000Z";
 
 struct AuthJob {
     void* clientData;
@@ -193,6 +188,8 @@ DWORD WINAPI auth_thread(LPVOID param) {
     info.ResultCode = 0;
     info.ClientData = job->clientData;
     info.LocalUserId = const_cast<char*>(kEpicId);
+    info.SelectedAccountId = const_cast<char*>(kEpicId);
+    shim_log("proxy: auth: login callback result=%d user=%s", info.ResultCode, kEpicId);
     job->callback(&info);
 
     delete job;
@@ -214,15 +211,12 @@ extern "C" void* EOS_Platform_Create(const void*) {
 }
 
 extern "C" std::int32_t EOS_Platform_Tick(void*) {
-    // The game's per-frame call. Everything the sidecar needs to do with
-    // managed objects happens here, on this thread; see better_game_pump().
-    // The duration is the full frame share the game gives us - stub, pump and
-    // all - measured from outside the agent, which cross-checks the agent's
-    // own accounting on the panel.
+    // The game's per-frame call. The measured duration is the whole call, and
+    // the start time drives the published tick rate.
     const std::uint64_t tick_t0 = PerfWindow::now_us();
     const std::int32_t result = stub("EOS_Platform_Tick");
     if (g_pump) g_pump();
-    shim_diag_tick(PerfWindow::since_us(tick_t0), g_pump != nullptr);
+    shim_diag_tick(tick_t0, PerfWindow::since_us(tick_t0), g_pump != nullptr);
     return result;
 }
 
@@ -259,24 +253,26 @@ extern "C" std::int32_t EOS_Connect_Login(void*, const e1::LoginOptions*,
                                           void* clientData, e1::LoginCallback callback) {
     stub("EOS_Connect_Login");
     if (!callback) {
-        return 1;  // EOS_NoConnection would be wrong; invalid parameters
+        shim_log("proxy: connect: login refused: no callback result=%d",
+                 eos_result::kInvalidParameters);
+        return eos_result::kInvalidParameters;
     }
     auto* job = new e1::LoginJob{clientData, callback};
     HANDLE thread = CreateThread(nullptr, 0, e1::login_thread, job, 0, nullptr);
     if (!thread) {
+        shim_log("proxy: connect: login thread failed error=%lu", GetLastError());
         delete job;
-        return 1;
+        return eos_result::kInvalidParameters;
     }
     CloseHandle(thread);
-    return 0;
+    return eos_result::kSuccess;
 }
 
-extern "C" std::int32_t EOS_Connect_GetLoginStatus(void*, const void*, std::int32_t* status) {
+// EOS_ELoginStatus EOS_Connect_GetLoginStatus(EOS_HConnect, EOS_ProductUserId):
+// two arguments, the status is the return value. There is no out pointer.
+extern "C" std::int32_t EOS_Connect_GetLoginStatus(void*, void*) {
     stub("EOS_Connect_GetLoginStatus");
-    if (status) {
-        *status = 2;  // EOS_ELoginStatus_LoggedIn
-    }
-    return 0;
+    return eos_result::kLoginStatusLoggedIn;
 }
 
 // EOS "Copy" APIs return an allocated object through a ** parameter; the game
@@ -286,14 +282,16 @@ extern "C" std::int32_t EOS_Connect_CopyIdToken(void*, const e1::CopyIdTokenOpti
                                                 e1::IdToken** out) {
     stub("EOS_Connect_CopyIdToken");
     if (!out) {
-        return 1;
+        shim_log("proxy: connect: copy id token refused: no out slot result=%d",
+                 eos_result::kInvalidParameters);
+        return eos_result::kInvalidParameters;
     }
     auto* token = new e1::IdToken{};
     token->ApiVersion = 1;
     token->ProductUserId = const_cast<char*>(e1::kUserId);
     token->JsonWebToken = e1::kIdToken;
     *out = token;
-    return 0;
+    return eos_result::kSuccess;
 }
 
 extern "C" void EOS_Connect_IdToken_Release(e1::IdToken* token) {
@@ -312,32 +310,35 @@ extern "C" std::int32_t EOS_Auth_Login(void*, const e1::AuthLoginOptions*,
                                        void* clientData, e1::AuthCallback callback) {
     stub("EOS_Auth_Login");
     if (!callback) {
-        return 1;
+        shim_log("proxy: auth: login refused: no callback result=%d",
+                 eos_result::kInvalidParameters);
+        return eos_result::kInvalidParameters;
     }
     auto* job = new e1::AuthJob{clientData, callback};
     HANDLE thread = CreateThread(nullptr, 0, e1::auth_thread, job, 0, nullptr);
     if (!thread) {
+        shim_log("proxy: auth: login thread failed error=%lu", GetLastError());
         delete job;
-        return 1;
+        return eos_result::kInvalidParameters;
     }
     CloseHandle(thread);
-    return 0;
+    return eos_result::kSuccess;
 }
 
-extern "C" std::int32_t EOS_Auth_GetLoginStatus(void*, const e1::GetLoginStatusOptions*,
-                                                 std::int32_t* status) {
+// EOS_ELoginStatus EOS_Auth_GetLoginStatus(EOS_HAuth, EOS_EpicAccountId): the
+// status is the return value, like the connect variant.
+extern "C" std::int32_t EOS_Auth_GetLoginStatus(void*, void*) {
     stub("EOS_Auth_GetLoginStatus");
-    if (status) {
-        *status = 2;  // EOS_ELoginStatus_LoggedIn
-    }
-    return 0;
+    return eos_result::kLoginStatusLoggedIn;
 }
 
 extern "C" std::int32_t EOS_Auth_CopyUserAuthToken(void*, const e1::CopyUserAuthTokenOptions*,
                                                    e1::AuthToken** out) {
     stub("EOS_Auth_CopyUserAuthToken");
     if (!out) {
-        return 1;
+        shim_log("proxy: auth: copy user auth token refused: no out slot result=%d",
+                 eos_result::kInvalidParameters);
+        return eos_result::kInvalidParameters;
     }
     auto* token = new e1::AuthToken{};
     token->ApiVersion = 1;
@@ -346,13 +347,13 @@ extern "C" std::int32_t EOS_Auth_CopyUserAuthToken(void*, const e1::CopyUserAuth
     token->AccountId = const_cast<char*>(e1::kEpicId);
     token->AccessToken = "emulator-access-token";
     token->ExpiresIn = 3600.0;
-    token->ExpiresAt = 4102444800.0;  // 2100-01-01
+    token->ExpiresAt = e1::kTokenExpiresAt;
     token->AuthType = 1;
     token->RefreshToken = "emulator-refresh-token";
     token->RefreshExpiresIn = 86400.0;
-    token->RefreshExpiresAt = 4102444800.0;
+    token->RefreshExpiresAt = e1::kTokenExpiresAt;
     *out = token;
-    return 0;
+    return eos_result::kSuccess;
 }
 
 extern "C" void* EOS_Auth_GetLoggedInAccountByIndex(void*, std::int32_t index) {
@@ -379,17 +380,14 @@ extern "C" void* EOS_EpicAccountId_FromString(const char* value) {
 
 extern "C" std::int32_t EOS_EpicAccountId_ToString(void*, char* buffer, std::int32_t* length) {
     stub("EOS_EpicAccountId_ToString");
-    const std::int32_t need = static_cast<std::int32_t>(sizeof e1::kEpicId);
-    if (!buffer || !length) {
-        return 1;
+    const std::int32_t offered = length ? *length : -1;
+    const std::int32_t result =
+        eos_result::copy_id_string(e1::kEpicId, sizeof e1::kEpicId, buffer, length);
+    if (result != eos_result::kSuccess) {
+        shim_log("proxy: ids: epic account to-string result=%d offered=%d need=%zu", result,
+                 offered, sizeof e1::kEpicId);
     }
-    if (*length < need) {
-        *length = need;
-        return 1;
-    }
-    std::memcpy(buffer, e1::kEpicId, need);
-    *length = need;
-    return 0;
+    return result;
 }
 
 // -- ids --------------------------------------------------------------------
@@ -414,22 +412,19 @@ extern "C" std::int32_t EOS_EpicAccountId_IsValid(const char* value) {
 
 // EOS_Bool: true when the operation finished. Only "will retry" is incomplete.
 extern "C" std::int32_t EOS_EResult_IsOperationComplete(std::int32_t result) {
-    return result == 8 /* EOS_OperationWillRetry */ ? 0 : 1;
+    return eos_result::operation_complete(result) ? 1 : 0;
 }
 
 extern "C" std::int32_t EOS_ProductUserId_ToString(void*, char* buffer, std::int32_t* length) {
     stub("EOS_ProductUserId_ToString");
-    const std::int32_t need = static_cast<std::int32_t>(sizeof e1::kUserId);  // includes NUL
-    if (!buffer || !length) {
-        return 1;
+    const std::int32_t offered = length ? *length : -1;
+    const std::int32_t result =
+        eos_result::copy_id_string(e1::kUserId, sizeof e1::kUserId, buffer, length);
+    if (result != eos_result::kSuccess) {
+        shim_log("proxy: ids: product user to-string result=%d offered=%d need=%zu", result,
+                 offered, sizeof e1::kUserId);
     }
-    if (*length < need) {
-        *length = need;
-        return 1;  // EOS_InvalidParameters
-    }
-    std::memcpy(buffer, e1::kUserId, need);
-    *length = need;
-    return 0;
+    return result;
 }
 
 // -- anti-cheat -------------------------------------------------------------

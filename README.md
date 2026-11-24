@@ -23,6 +23,14 @@ Requires MinGW-w64 (see the error message in the script for your distro's packag
 
 Output: `shim/bin/EOSSDK-Win64-Shipping.dll`.
 
+## Tests
+
+```sh
+./tests/run.sh
+```
+
+Host suite for the platform-free shim units.
+
 ## Installation
 
 See [INSTALL.md](INSTALL.md).

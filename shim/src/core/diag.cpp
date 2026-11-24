@@ -10,6 +10,7 @@
 
 #include "bg_diag.h"
 #include "diag_slot.hpp"
+#include "core/tick_rate.hpp"
 #include "perf.hpp"
 
 namespace {
@@ -23,8 +24,7 @@ std::atomic<std::uint64_t> g_faults{0};
 std::uint64_t g_tick_us = 0;
 std::uint64_t g_tick_max_us = 0;
 std::uint64_t g_publish_ms = 0;
-std::uint64_t g_last_tick_us = 0;
-double g_hz = 0.0;
+TickRate g_rate;
 
 void open() {
     if (g_diag) return;
@@ -63,19 +63,10 @@ void shim_diag_note_locked(const char* fmt, ...) {
     diag_line_push(g_diag->slot[BG_DIAG_SHIM], wall_ms(), text);
 }
 
-void shim_diag_tick(std::uint64_t tick_us, bool pump_wired) {
+void shim_diag_tick(std::uint64_t start_us, std::uint64_t tick_us, bool pump_wired) {
     // The cadence runs on every call so the rate stays honest; the publish is
-    // throttled. One EMA update per frame is two multiplies.
-    if (g_last_tick_us) {
-        const double dt = static_cast<double>(tick_us - g_last_tick_us) / 1000000.0;
-        if (dt > 0.0001 && dt < 2.0) {
-            const double hz = 1.0 / dt;
-            g_hz = g_hz > 0.0 ? g_hz * 0.9 + hz * 0.1 : hz;
-        } else if (dt >= 2.0) {
-            g_hz = 0.0;
-        }
-    }
-    g_last_tick_us = tick_us;
+    // throttled. The rate follows the start times, the cost the durations.
+    g_rate.observe(start_us);
 
     g_ticks.fetch_add(1, std::memory_order_relaxed);
     g_tick_us += tick_us;
@@ -91,7 +82,7 @@ void shim_diag_tick(std::uint64_t tick_us, bool pump_wired) {
     diag_slot_begin(s);
     s.producer = BG_DIAG_SHIM;
     s.pid = GetCurrentProcessId();
-    s.hz = static_cast<std::uint32_t>(g_hz + 0.5);
+    s.hz = static_cast<std::uint32_t>(g_rate.hz() + 0.5);
     s.flags = pump_wired ? 1u : 0u;
     s.state = pump_wired ? 1u : 0u;
     s.mono_ms = now;

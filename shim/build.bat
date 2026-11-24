@@ -28,7 +28,7 @@ if not exist bin mkdir bin
 echo [*] compiling
 cl /nologo /LD /MD /O2 /EHsc /W3 /DNDEBUG /Isrc /I..\shared\include /D_WIN32_WINNT=0x0601 /DWINVER=0x0601 ^
    src\core\boot.cpp src\core\diag.cpp src\abi\eos.cpp ^
-   src\abi\anticheat.cpp src\abi\anticheat_policy.cpp ^
+   src\abi\anticheat.cpp src\abi\anticheat_policy.cpp src\abi\eos_result.cpp src\core\tick_rate.cpp src\core\fault_site.cpp ^
    /Fo"%OBJ%"\ /Fd"%OBJ%\shim.pdb" ^
    /link /DEF:src\exports.def /OUT:"%OBJ%\EOSSDK-Win64-Shipping.dll" ^
    /OPT:NOICF /INCREMENTAL:NO

@@ -1,8 +1,9 @@
-// Shim boot: the log, the optional sidecar load, and the shared stub that
-// every unimplemented export lands in.
+// Shim boot: the log and the shared stub that every unimplemented export is
+// routed to.
 
 #include "core/boot.hpp"
 #include "core/diag.hpp"
+#include "core/fault_site.hpp"
 
 #include <cstdint>
 #include <cstdarg>
@@ -70,10 +71,9 @@ INIT_ONCE g_open_once = INIT_ONCE_STATIC_INIT;
 
 }  // namespace
 
-// Nothing wires this in this build: there is no sidecar to load, so the pump
-// stays null and EOS_Platform_Tick only measures its own cost. The declaration
-// is kept so every other translation unit is identical to the build that does
-// load better_game.dll.
+// Nothing wires this in this build: the pump stays null and EOS_Platform_Tick
+// only measures its own cost. The declaration is kept so every other
+// translation unit stays identical to the build that does wire one.
 void (*g_pump)() = nullptr;
 
 int stub(const char* name) {
@@ -140,20 +140,21 @@ LONG WINAPI on_fault(EXCEPTION_POINTERS* info) {
 
     MEMORY_BASIC_INFORMATION mbi{};
     const char* where = "unknown";
-    char module_name[MAX_PATH] = "?";
+    char module_name[MAX_PATH] = {};
     unsigned long long rva = 0;
 
     if (VirtualQuery(address, &mbi, sizeof mbi) && mbi.AllocationBase) {
         if (mbi.AllocationBase == self) {
             where = "inside our shim";
+            rva = reinterpret_cast<unsigned long long>(address) -
+                  reinterpret_cast<unsigned long long>(self);
         } else {
             HMODULE owner = nullptr;
             if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                    static_cast<LPCSTR>(mbi.AllocationBase), &owner) &&
                 owner) {
-                GetModuleFileNameA(owner, module_name, MAX_PATH);
-                where = module_name;
+                if (GetModuleFileNameA(owner, module_name, MAX_PATH)) where = module_name;
                 rva = reinterpret_cast<unsigned long long>(address) -
                       reinterpret_cast<unsigned long long>(owner);
             }
@@ -166,11 +167,7 @@ LONG WINAPI on_fault(EXCEPTION_POINTERS* info) {
                  GetCurrentThreadId());
     std::fflush(g_state.file);
     shim_diag_fault();
-    const char* leaf = where;  // "unknown" when no owning module was found
-    if (module_name[0]) {
-        const char* slash = std::strrchr(module_name, '\\');
-        leaf = slash ? slash + 1 : module_name;
-    }
+    const char* leaf = fault_leaf(module_name, where);
     shim_diag_note_locked("!!! fault code=0x%08lx in %s + %#llx thread=%lu",
                           static_cast<unsigned long>(rec->ExceptionCode), leaf, rva,
                           GetCurrentThreadId());

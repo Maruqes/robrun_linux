@@ -108,4 +108,14 @@ std::size_t to_hex(const std::uint8_t* data, std::size_t len, char* out, std::si
     return len * 2;
 }
 
+const char* hex_text(const std::uint8_t* data, std::size_t len, std::size_t max_bytes,
+                     char* scratch, std::size_t scratch_len) {
+    if (!scratch || scratch_len == 0) return "";
+    scratch[0] = '\0';
+    if (!data || len == 0) return scratch;
+    const std::size_t capped = len < max_bytes ? len : max_bytes;
+    to_hex(data, capped, scratch, scratch_len);
+    return scratch;
+}
+
 }  // namespace eos_ac

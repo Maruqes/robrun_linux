@@ -32,6 +32,14 @@ build_mingw.bat
 
 ## Verify
 
+Host suite for the platform-free translation units, from the repository root:
+
+```sh
+tests/run.sh
+```
+
+Export surface, on Windows:
+
 ```bat
 bin\loadtest.exe bin\EOSSDK-Win64-Shipping.dll src\exports.def
 :: expect: checked=681 missing=0
@@ -48,6 +56,9 @@ python3 tools/gen_stubs.py
 The generator reads `data/eos-proxy.def` (681 names from the genuine SDK) and
 writes a local `src/exports.def`.
 
-## Log
+## Log and switches
 
 The DLL appends to `eos-shim.log` next to itself. `EOSSHIM_LOG=0` disables it.
+`EOSSHIM_AC` selects the anti-cheat client policy: `null` (default, the session
+is refused), `off`, `echo`, or `probe:<hex>` for capture runs. Both are read
+from the environment at first use.

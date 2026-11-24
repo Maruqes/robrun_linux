@@ -24,11 +24,11 @@ if not exist src\exports.inc (
 if not exist bin mkdir bin
 
 echo [*] building shim
-g++ -shared -O2 -Wall -Wextra ^
+g++ -shared -O2 -Wall -Wextra -Wshadow ^
     -Isrc -I..\shared\include -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 ^
     -o bin\EOSSDK-Win64-Shipping.dll ^
     src\core\boot.cpp src\core\diag.cpp src\abi\eos.cpp ^
-    src\abi\anticheat.cpp src\abi\anticheat_policy.cpp src\exports.def ^
+    src\abi\anticheat.cpp src\abi\anticheat_policy.cpp src\abi\eos_result.cpp src\core\tick_rate.cpp src\core\fault_site.cpp src\exports.def ^
     -static -static-libgcc -static-libstdc++ ^
     -Wl,--no-insert-timestamp
 if errorlevel 1 (
