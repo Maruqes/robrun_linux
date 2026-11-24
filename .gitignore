@@ -3,4 +3,8 @@ shim/bin/
 shim/obj/
 tests/build/
 __pycache__/
-eos-shim.log
+
+# Tool and editor state.
+.opencode/
+.opencode-monitor/
+*.log
